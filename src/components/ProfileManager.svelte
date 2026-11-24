@@ -4,6 +4,7 @@
 
 	import Browsers from "phosphor-svelte/lib/Browsers";
 	import Copy from "phosphor-svelte/lib/Copy";
+	import DotsSixVertical from "phosphor-svelte/lib/DotsSixVertical";
 	import FloppyDisk from "phosphor-svelte/lib/FloppyDisk";
 	import Pencil from "phosphor-svelte/lib/Pencil";
 	import Trash from "phosphor-svelte/lib/Trash";
@@ -11,6 +12,7 @@
 
 	import { t } from "$lib/i18n";
 	import { inspectedInstance } from "$lib/propertyInspector";
+	import { refreshReplicated } from "$lib/replicated";
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
@@ -47,6 +49,7 @@
 		const selected: Profile = await invoke("get_selected_profile", { device: device.id });
 		if (seq != switchSeq) return;
 		profile = selected;
+		refreshReplicated(device.id);
 
 		let folder = id.includes("/") ? id.split("/")[0] : "";
 		if (folders[folder]) {
@@ -74,6 +77,43 @@
 		let folder = id.includes("/") ? id.split("/")[0] : "";
 		folders[folder].splice(folders[folder].indexOf(id), 1);
 		folders = folders;
+	}
+
+	// Drag-and-drop ordering. The order is a flat list of profile IDs; folders are shown where their first profile is.
+	let dragging: string | null = null;
+	let dropTarget: { id: string; after: boolean } | null = null;
+
+	function onDragOver(event: DragEvent, id: string) {
+		if (!dragging) return;
+		event.preventDefault();
+		if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+		const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+		dropTarget = { id, after: event.clientY > rect.top + rect.height / 2 };
+	}
+
+	async function onDrop(event: DragEvent) {
+		event.preventDefault();
+		const source = dragging;
+		const target = dropTarget;
+		dragging = null;
+		dropTarget = null;
+		if (!source || !target || source == target.id) return;
+
+		const order = Object.values(folders)
+			.flat()
+			.filter((id) => id != source);
+		let index = order.indexOf(target.id);
+		if (index == -1) return;
+		if (target.after) index++;
+		order.splice(index, 0, source);
+
+		folders = {};
+		for (const id of order) {
+			let folder = id.includes("/") ? id.split("/")[0] : "";
+			if (folders[folder]) folders[folder].push(id);
+			else folders[folder] = [id];
+		}
+		await invoke("set_profile_order", { device: device.id, order });
 	}
 
 	let renamingProfile: string | null = null;
@@ -196,15 +236,15 @@
 <div class="select-profile-wrapper">
 	<span bind:this={measure} class="invisible fixed whitespace-pre pointer-events-none" aria-hidden="true"></span>
 	<select bind:value style:width="{selectWidth}px" aria-label={$t("profile_manager.label")}>
-		{#each Object.entries(folders).sort() as [id, profiles]}
+		{#each Object.entries(folders) as [id, profiles]}
 			{#if id && profiles.length}
 				<optgroup label={id}>
-					{#each profiles.sort() as profile}
+					{#each profiles as profile}
 						<option value={profile}>{profile.split("/")[1]}</option>
 					{/each}
 				</optgroup>
 			{:else}
-				{#each profiles.sort() as profile}
+				{#each profiles as profile}
 					<option value={profile}>{profile}</option>
 				{/each}
 			{/if}
@@ -259,12 +299,36 @@
 	</div>
 
 	<div class="divide-y divide-neutral-500!">
-		{#each Object.entries(folders).sort() as [id, profiles]}
+		{#each Object.entries(folders) as [id, profiles]}
 			{#if id && profiles.length}
 				<h4 class="py-2 font-bold text-lg text-neutral-300">{id}</h4>
 			{/if}
-			{#each profiles.sort() as profile}
-				<div class="flex flex-row items-center py-2 space-x-2" class:ml-6={id} class:pl-2={id}>
+			{#each profiles as profile (profile)}
+				<!-- svelte-ignore a11y-no-static-element-interactions -->
+				<div
+					class="flex flex-row items-center py-2 space-x-2"
+					class:ml-6={id}
+					class:pl-2={id}
+					class:opacity-50={dragging == profile}
+					style:box-shadow={dropTarget?.id == profile && dragging != profile ? `inset 0 ${dropTarget.after ? -3 : 3}px 0 0 #3b82f6` : null}
+					draggable={renamingProfile != profile}
+					on:dragstart={(event) => {
+						dragging = profile;
+						if (event.dataTransfer) {
+							event.dataTransfer.effectAllowed = "move";
+							event.dataTransfer.setData("text/plain", profile);
+						}
+					}}
+					on:dragend={() => {
+						dragging = null;
+						dropTarget = null;
+					}}
+					on:dragover={(event) => onDragOver(event, profile)}
+					on:drop={onDrop}
+				>
+					<span class="cursor-grab text-neutral-500" title={$t("profile_manager.reorder")}>
+						<DotsSixVertical size="20" />
+					</span>
 					<input
 						type="radio"
 						bind:group={value}
