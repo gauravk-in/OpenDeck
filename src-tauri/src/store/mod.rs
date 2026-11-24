@@ -3,6 +3,7 @@ mod simplified_profile;
 
 use crate::shared::is_flatpak;
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -172,3 +173,20 @@ pub fn get_settings() -> Store<Settings> {
 
 pub static SETTINGS_MUT: std::sync::LazyLock<tokio::sync::Mutex<Store<Settings>>> =
 	std::sync::LazyLock::new(|| tokio::sync::Mutex::new(Store::new_concurrent("settings", &crate::shared::config_dir(), Settings::default())));
+
+/// Position of one controller in a custom device layout, in units of one key slot
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LayoutPosition {
+	pub x: f32,
+	pub y: f32,
+	/// Display size relative to a normal key slot; defaults to 1
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub scale: Option<f32>,
+}
+
+/// Custom device layouts: device ID -> controller key (e.g. "Keypad.3", "Encoder.0") -> position
+pub type DeviceLayouts = HashMap<String, HashMap<String, LayoutPosition>>;
+impl NotProfile for DeviceLayouts {}
+
+pub static DEVICE_LAYOUTS: std::sync::LazyLock<tokio::sync::RwLock<Store<DeviceLayouts>>> =
+	std::sync::LazyLock::new(|| tokio::sync::RwLock::new(Store::new_concurrent("layouts", &crate::shared::config_dir(), HashMap::new())));

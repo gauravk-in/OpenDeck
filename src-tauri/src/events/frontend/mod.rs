@@ -118,6 +118,21 @@ pub async fn set_application_profiles(value: crate::application_watcher::Applica
 }
 
 #[command]
+pub async fn get_device_layout(device: String) -> Option<HashMap<String, crate::store::LayoutPosition>> {
+	crate::store::DEVICE_LAYOUTS.read().await.value.get(&device).cloned()
+}
+
+#[command]
+pub async fn set_device_layout(device: String, layout: Option<HashMap<String, crate::store::LayoutPosition>>) -> Result<(), Error> {
+	let mut store = crate::store::DEVICE_LAYOUTS.write().await;
+	match layout {
+		Some(layout) => store.value.insert(device, layout),
+		None => store.value.remove(&device),
+	};
+	Ok(store.save()?)
+}
+
+#[command]
 pub fn get_fonts() -> Vec<String> {
 	system_fonts::query_all()
 }

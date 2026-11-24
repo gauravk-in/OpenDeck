@@ -78,6 +78,8 @@ async fn main() {
 			frontend::get_applications,
 			frontend::get_application_profiles,
 			frontend::set_application_profiles,
+			frontend::get_device_layout,
+			frontend::set_device_layout,
 			frontend::get_fonts,
 			frontend::instances::create_instance,
 			frontend::instances::move_instance,
