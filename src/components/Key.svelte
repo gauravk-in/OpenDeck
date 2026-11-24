@@ -89,6 +89,12 @@
 	}
 
 	let contextMenuEl: HTMLDivElement;
+	// Render the menu at the top of the page: inside a custom layout, keys sit in scaled, positioned containers,
+	// which would otherwise shrink the menu and move it away from the pointer.
+	function portal(node: HTMLElement) {
+		document.body.appendChild(node);
+		return { destroy: () => node.remove() };
+	}
 	async function contextMenu(event: MouseEvent | KeyboardEvent) {
 		event.preventDefault();
 		if (!active || !context) return;
@@ -97,6 +103,13 @@
 		let y = event instanceof MouseEvent && event.y ? event.y : rect.bottom;
 		$openContextMenu = { context, x, y };
 		await tick();
+		// Keep the whole menu on screen.
+		if (contextMenuEl) {
+			const rect = contextMenuEl.getBoundingClientRect();
+			const fitX = Math.max(0, Math.min(x, window.innerWidth - rect.width - 4));
+			const fitY = Math.max(0, Math.min(y, window.innerHeight - rect.height - 4));
+			if (fitX != x || fitY != y) $openContextMenu = { context, x: fitX, y: fitY };
+		}
 		contextMenuEl?.querySelector("button")?.focus();
 	}
 
@@ -281,7 +294,8 @@
 {#if $openContextMenu && $openContextMenu?.context == context}
 	<div
 		bind:this={contextMenuEl}
-		class="absolute w-52 font-semibold text-sm text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg divide-y divide-neutral-600! z-10"
+		use:portal
+		class="fixed w-52 font-semibold text-sm text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg divide-y divide-neutral-600! z-50"
 		style={`left: ${$openContextMenu.x}px; top: ${$openContextMenu.y}px;`}
 	>
 		{#if !slot}
