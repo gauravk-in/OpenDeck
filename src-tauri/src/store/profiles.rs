@@ -192,6 +192,12 @@ impl ProfileStores {
 #[derive(Serialize, Deserialize)]
 pub struct DeviceConfig {
 	pub selected_profile: String,
+	/// User-chosen display order of this device's profiles. Profiles not listed here follow in alphabetical order.
+	#[serde(default)]
+	pub profile_order: Vec<String>,
+	/// Slots (e.g. `Keypad.3`, `Encoder.0`) whose action is kept identical on every profile of this device.
+	#[serde(default)]
+	pub replicated: Vec<String>,
 }
 
 impl super::NotProfile for DeviceConfig {}
@@ -201,10 +207,12 @@ pub struct DeviceStores {
 }
 
 impl DeviceStores {
-	pub fn get_selected_profile(&mut self, device: &str) -> Result<String, anyhow::Error> {
+	fn config_store(&mut self, device: &str) -> Result<&mut Store<DeviceConfig>, anyhow::Error> {
 		if !self.stores.contains_key(device) {
 			let default = DeviceConfig {
 				selected_profile: "Default".to_owned(),
+				profile_order: Vec::new(),
+				replicated: Vec::new(),
 			};
 
 			let store = Store::new(device, &config_dir().join("profiles"), default).context(format!("Failed to create store for device config {}", device))?;
@@ -212,27 +220,57 @@ impl DeviceStores {
 
 			self.stores.insert(device.to_owned(), store);
 		}
+		Ok(self.stores.get_mut(device).unwrap())
+	}
 
-		let from_store = &self.stores.get(device).unwrap().value.selected_profile;
-		let all = get_device_profiles(device)?;
+	pub fn get_profile_order(&mut self, device: &str) -> Result<Vec<String>, anyhow::Error> {
+		Ok(self.config_store(device)?.value.profile_order.clone())
+	}
+
+	pub fn set_profile_order(&mut self, device: &str, order: Vec<String>) -> Result<(), anyhow::Error> {
+		let store = self.config_store(device)?;
+		store.value.profile_order = order;
+		store.save()
+	}
+
+	pub fn get_replicated(&mut self, device: &str) -> Result<Vec<String>, anyhow::Error> {
+		Ok(self.config_store(device)?.value.replicated.clone())
+	}
+
+	pub fn set_replicated(&mut self, device: &str, replicated: Vec<String>) -> Result<(), anyhow::Error> {
+		let store = self.config_store(device)?;
+		store.value.replicated = replicated;
+		store.save()
+	}
+
+	/// All profiles of a device, in the user's chosen order.
+	pub fn get_ordered_profiles(&mut self, device: &str) -> Result<Vec<String>, anyhow::Error> {
+		let order = self.get_profile_order(device)?;
+		Ok(sort_profiles(get_device_profiles(device)?, &order))
+	}
+
+	pub fn get_selected_profile(&mut self, device: &str) -> Result<String, anyhow::Error> {
+		self.config_store(device)?;
+
+		let from_store = &self.stores.get(device).unwrap().value.selected_profile.clone();
+		let all = self.get_ordered_profiles(device)?;
 		if all.contains(from_store) { Ok(from_store.clone()) } else { Ok(all.first().unwrap().clone()) }
 	}
 
 	pub fn set_selected_profile(&mut self, device: &str, id: String) -> Result<(), anyhow::Error> {
-		if self.stores.contains_key(device) {
-			let store = self.stores.get_mut(device).unwrap();
-			store.value.selected_profile = id;
-			store.save()?;
-		} else {
-			let default = DeviceConfig { selected_profile: id };
-
-			let store = Store::new(device, &config_dir().join("profiles"), default).context(format!("Failed to create store for device config {}", device))?;
-			store.save()?;
-
-			self.stores.insert(device.to_owned(), store);
-		}
+		let store = self.config_store(device)?;
+		store.value.selected_profile = id;
+		store.save()?;
 		Ok(())
 	}
+}
+
+/// Sort profile IDs by a user-defined order. IDs missing from the order keep alphabetical order after the listed ones.
+pub fn sort_profiles(mut profiles: Vec<String>, order: &[String]) -> Vec<String> {
+	profiles.sort();
+	profiles.dedup();
+	profiles.sort_by_key(|id| order.iter().position(|o| o == id).unwrap_or(usize::MAX));
+	profiles
 }
 
 pub fn get_device_profiles(device: &str) -> Result<Vec<String>, anyhow::Error> {
@@ -396,5 +434,143 @@ pub async fn flush_stale_profiles() -> Result<(), anyhow::Error> {
 			store.value.stale = false;
 		}
 	}
+	Ok(())
+}
+
+/// Identify a slot on a device independently of the profile, e.g. `Keypad.3`.
+pub fn slot_key(controller: &str, position: u8) -> String {
+	format!("{controller}.{position}")
+}
+
+fn profile_slot_mut<'a>(profile: &'a mut Profile, key: &str) -> Option<&'a mut Option<ActionInstance>> {
+	let (controller, position) = key.split_once('.')?;
+	let position: usize = position.parse().ok()?;
+	match controller {
+		"Encoder" => profile.sliders.get_mut(position),
+		"Infobar" => profile.infobars.get_mut(position),
+		"Keypad" => profile.keys.get_mut(position),
+		_ => None,
+	}
+}
+
+fn instance_images_dir(context: &crate::shared::ActionContext) -> PathBuf {
+	config_dir()
+		.join("images")
+		.join(&context.device)
+		.join(&context.profile)
+		.join(format!("{}.{}.{}", context.controller, context.position, context.index))
+}
+
+/// Make a copy of an instance for another profile, pointing any per-instance images at that profile's image folder.
+/// Returns the copy and the list of image folders to copy across, as (from, to).
+fn retarget_instance(instance: &ActionInstance, profile: &str) -> (ActionInstance, Vec<(PathBuf, PathBuf)>) {
+	let mut copy = instance.clone();
+	let mut dirs = vec![];
+	let mut fix = |instance: &mut ActionInstance| {
+		let old_dir = instance_images_dir(&instance.context);
+		instance.context.profile = profile.to_owned();
+		let new_dir = instance_images_dir(&instance.context);
+		let rewrite = |image: &mut String| {
+			let path = std::path::Path::new(image.as_str());
+			if path.starts_with(&old_dir) {
+				*image = new_dir.join(path.strip_prefix(&old_dir).unwrap()).to_string_lossy().into_owned();
+			}
+		};
+		for state in instance.states.iter_mut() {
+			rewrite(&mut state.image);
+			if let Some(image_override) = state.image_override.as_mut() {
+				rewrite(image_override);
+			}
+		}
+		dirs.push((old_dir, new_dir));
+	};
+	fix(&mut copy);
+	if let Some(children) = copy.children.as_mut() {
+		for child in children.iter_mut() {
+			fix(child);
+		}
+	}
+	(copy, dirs)
+}
+
+fn instance_dirs(instance: &ActionInstance) -> Vec<PathBuf> {
+	let mut dirs = vec![instance_images_dir(&instance.context)];
+	if let Some(children) = &instance.children {
+		dirs.extend(children.iter().map(|c| instance_images_dir(&c.context)));
+	}
+	dirs
+}
+
+/// Copy the contents of every replicated slot of `source` onto every other profile of the device.
+/// A replicated slot that is empty on `source` is cleared everywhere and stops being replicated.
+pub async fn propagate_replicated(device_id: &str, source: &str, locks: &mut LocksMut<'_>) -> Result<(), anyhow::Error> {
+	let keys = locks.device_stores.get_replicated(device_id)?;
+	if keys.is_empty() {
+		return Ok(());
+	}
+	let device = DEVICES.get(device_id).ok_or_else(|| anyhow!("device not found"))?.clone();
+
+	let source_store = locks.profile_stores.get_profile_store_mut(&device, source).await?;
+	let mut slots: Vec<(String, Option<ActionInstance>)> = vec![];
+	for key in &keys {
+		if let Some(slot) = profile_slot_mut(&mut source_store.value, key) {
+			slots.push((key.clone(), slot.clone()));
+		}
+	}
+
+	for profile in get_device_profiles(device_id)? {
+		if profile == source {
+			continue;
+		}
+		let store = locks.profile_stores.get_profile_store_mut(&device, &profile).await?;
+		let mut changed = false;
+		for (key, instance) in &slots {
+			let Some(slot) = profile_slot_mut(&mut store.value, key) else { continue };
+			let mut new = instance.as_ref().map(|i| retarget_instance(i, &profile));
+			// Titles and images set by the plugin at runtime (as opposed to the user's overrides) belong to each copy:
+			// a plugin may show something different on each profile, e.g. the name of the next page.
+			if let (Some(old), Some((new, _))) = (&*slot, &mut new)
+				&& old.action.uuid == new.action.uuid
+			{
+				for (new_state, old_state) in new.states.iter_mut().zip(&old.states) {
+					new_state.text.clone_from(&old_state.text);
+					new_state.image.clone_from(&old_state.image);
+				}
+			}
+			let same = match (&*slot, &new) {
+				(None, None) => true,
+				(Some(old), Some((new, _))) => serde_json::to_value(old).ok() == serde_json::to_value(new).ok(),
+				_ => false,
+			};
+			if same {
+				continue;
+			}
+			if let Some(old) = slot.as_ref() {
+				for dir in instance_dirs(old) {
+					let _ = fs::remove_dir_all(dir);
+				}
+			}
+			if let Some((_, dirs)) = &new {
+				for (from, to) in dirs {
+					if from.is_dir() {
+						let _ = copy_dir(from, to);
+					}
+				}
+			}
+			*slot = new.map(|(i, _)| i);
+			changed = true;
+		}
+		if changed {
+			store.save()?;
+			store.value.stale = false;
+		}
+	}
+
+	let emptied: Vec<&String> = slots.iter().filter(|(_, i)| i.is_none()).map(|(k, _)| k).collect();
+	if !emptied.is_empty() {
+		let remaining = keys.iter().filter(|k| !emptied.contains(k)).cloned().collect();
+		locks.device_stores.set_replicated(device_id, remaining)?;
+	}
+
 	Ok(())
 }

@@ -7,16 +7,19 @@
 	import Clipboard from "phosphor-svelte/lib/Clipboard";
 	import Copy from "phosphor-svelte/lib/Copy";
 	import Pencil from "phosphor-svelte/lib/Pencil";
+	import Stack from "phosphor-svelte/lib/Stack";
 	import Trash from "phosphor-svelte/lib/Trash";
 	import InstanceEditor from "./InstanceEditor.svelte";
 
 	import { t } from "$lib/i18n";
 	import { copiedItem, inspectedInstance, inspectedParentAction, openContextMenu } from "$lib/propertyInspector";
 	import { CanvasLock, renderImage } from "$lib/rendererHelper";
+	import { ensureReplicatedLoaded, replicatedSlots, slotKey } from "$lib/replicated";
 	import { settings } from "$lib/settings";
 
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
+	import { ask, message } from "@tauri-apps/plugin-dialog";
 	import { tick } from "svelte";
 
 	export let context: Context | null;
@@ -86,6 +89,12 @@
 	}
 
 	let contextMenuEl: HTMLDivElement;
+	// Render the menu at the top of the page: inside a custom layout, keys sit in scaled, positioned containers,
+	// which would otherwise shrink the menu and move it away from the pointer.
+	function portal(node: HTMLElement) {
+		document.body.appendChild(node);
+		return { destroy: () => node.remove() };
+	}
 	async function contextMenu(event: MouseEvent | KeyboardEvent) {
 		event.preventDefault();
 		if (!active || !context) return;
@@ -94,6 +103,13 @@
 		let y = event instanceof MouseEvent && event.y ? event.y : rect.bottom;
 		$openContextMenu = { context, x, y };
 		await tick();
+		// Keep the whole menu on screen.
+		if (contextMenuEl) {
+			const rect = contextMenuEl.getBoundingClientRect();
+			const fitX = Math.max(0, Math.min(x, window.innerWidth - rect.width - 4));
+			const fitY = Math.max(0, Math.min(y, window.innerHeight - rect.height - 4));
+			if (fitX != x || fitY != y) $openContextMenu = { context, x: fitX, y: fitY };
+		}
 		contextMenuEl?.querySelector("button")?.focus();
 	}
 
@@ -118,10 +134,43 @@
 		$inspectedInstance = `${context.device}.${context.profile}.${context.controller}.${context.position}.0`;
 	}
 
+	$: if (context) ensureReplicatedLoaded(context.device);
+	$: replicated = context != null && ($replicatedSlots[context.device] ?? []).includes(slotKey(context.controller, context.position));
+
+	async function toggleReplicated() {
+		$openContextMenu = null;
+		if (!context || !slot) return;
+		if (!replicated) {
+			const confirmed = await ask($t("key.replicate.confirm"), {
+				title: $t("key.replicate"),
+				kind: "warning",
+				okLabel: $t("key.replicate"),
+				cancelLabel: $t("dialog.cancel"),
+			});
+			if (!confirmed) return;
+		}
+		try {
+			await invoke("set_slot_replicated", { context, replicated: !replicated });
+		} catch (error: any) {
+			message(String(error), { title: $t("key.replicate"), buttons: { ok: $t("dialog.ok") } });
+		}
+	}
+
 	async function clear() {
 		$openContextMenu = null;
 		if (!slot) return;
+		const wasReplicated = replicated;
+		if (wasReplicated) {
+			const confirmed = await ask($t("key.replicate.delete_confirm"), {
+				title: $t("key.delete"),
+				kind: "warning",
+				okLabel: $t("key.delete"),
+				cancelLabel: $t("dialog.cancel"),
+			});
+			if (!confirmed) return;
+		}
 		await invoke("remove_instance", { context: slot.context });
+		if (wasReplicated && context) await invoke("set_slot_replicated", { context, replicated: false });
 		showEditor = false;
 		slot = null;
 		inslot = slot;
@@ -228,6 +277,15 @@
 		on:focus={onfocus}
 		on:contextmenu={contextMenu}
 	/>
+	{#if replicated && slot}
+		<div
+			class="absolute -top-1 -left-1 p-1 rounded-full bg-blue-600 text-white pointer-events-none"
+			style={`transform: scale(${size / 112});`}
+			title={$t("key.replicate.badge")}
+		>
+			<Stack size="16" />
+		</div>
+	{/if}
 	{#if isTouchPoint && !slot}
 		<div class="absolute left-1/4 top-1/2 w-1/2 border-t-4 border-neutral-700 pointer-events-none"></div>
 	{/if}
@@ -236,7 +294,8 @@
 {#if $openContextMenu && $openContextMenu?.context == context}
 	<div
 		bind:this={contextMenuEl}
-		class="absolute w-32 font-semibold text-sm text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg divide-y divide-neutral-600! z-10"
+		use:portal
+		class="fixed w-52 font-semibold text-sm text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg divide-y divide-neutral-600! z-50"
 		style={`left: ${$openContextMenu.x}px; top: ${$openContextMenu.y}px;`}
 	>
 		{#if !slot}
@@ -252,6 +311,10 @@
 			<button class="flex flex-row items-center w-full p-2 hover:bg-neutral-600 transition-colors cursor-pointer" on:click|stopPropagation={copy}>
 				<Copy size="18" class="text-neutral-300" />
 				<span class="ml-2">{$t("key.copy")}</span>
+			</button>
+			<button class="flex flex-row items-center w-full p-2 hover:bg-neutral-600 transition-colors cursor-pointer" on:click|stopPropagation={toggleReplicated}>
+				<Stack size="18" class="text-blue-400" />
+				<span class="ml-2 text-left">{replicated ? $t("key.replicate.stop") : $t("key.replicate")}</span>
 			</button>
 			<button class="flex flex-row items-center w-full p-2 hover:bg-neutral-600 transition-colors rounded-b-lg cursor-pointer" on:click|stopPropagation={clear}>
 				<Trash size="18" class="text-red-400" />
