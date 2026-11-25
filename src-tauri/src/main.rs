@@ -8,6 +8,7 @@ mod encoder_layouts;
 mod events;
 mod plugins;
 mod power_events;
+mod remote;
 mod shared;
 mod store;
 mod zip_extract;
@@ -215,6 +216,7 @@ If you have already donated, thank you so much for your support!"#,
 			});
 
 			plugins::initialise_plugins();
+			tokio::spawn(remote::init());
 			application_watcher::init_application_watcher();
 			device_sleep::init_device_sleep();
 			power_events::init_power_events();

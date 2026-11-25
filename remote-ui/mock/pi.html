@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8" />
+		<style>
+			body {
+				font-family: system-ui, sans-serif;
+				color: #ddd;
+				background: #2d2d2d;
+				margin: 0;
+				padding: 12px;
+				font-size: 14px;
+			}
+			label {
+				display: block;
+				margin-bottom: 10px;
+			}
+			span {
+				display: block;
+				color: #aaa;
+				font-size: 12px;
+				margin-bottom: 4px;
+			}
+			input,
+			select {
+				width: 100%;
+				box-sizing: border-box;
+				padding: 8px;
+				background: #3d3d3d;
+				color: #eee;
+				border: 1px solid #555;
+				border-radius: 4px;
+				font-size: 14px;
+			}
+			#status {
+				font-size: 12px;
+				color: #8f8;
+			}
+		</style>
+	</head>
+	<body>
+		<label><span>Home Assistant URL</span><input id="url" placeholder="http://homeassistant.local:8123" /></label>
+		<label><span>Long-lived access token</span><input id="token" type="password" /></label>
+		<label><span>Back to rooms after (seconds)</span><input id="timeout" type="number" value="30" /></label>
+		<div id="status">Not connected</div>
+		<script>
+			// Minimal Stream Deck SDK style property inspector, used by the mock server to test property inspector hosting.
+			let socket, uuid;
+			function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+				uuid = inUUID;
+				socket = new WebSocket("ws://127.0.0.1:" + port);
+				socket.onopen = () => {
+					socket.send(JSON.stringify({ event: registerEvent, uuid }));
+					socket.send(JSON.stringify({ event: "getGlobalSettings", context: uuid }));
+					document.getElementById("status").textContent = "Connected to OpenDeck";
+				};
+				socket.onmessage = (message) => {
+					const data = JSON.parse(message.data);
+					if (data.event == "didReceiveGlobalSettings") {
+						const s = data.payload.settings;
+						document.getElementById("url").value = s.url ?? "";
+						document.getElementById("token").value = s.token ?? "";
+						document.getElementById("timeout").value = s.timeoutSecs ?? 30;
+					}
+				};
+			}
+			for (const id of ["url", "token", "timeout"]) {
+				document.getElementById(id).addEventListener("change", () => {
+					socket?.send(
+						JSON.stringify({
+							event: "setGlobalSettings",
+							context: uuid,
+							payload: { url: url.value, token: token.value, timeoutSecs: Number(timeout.value), hiddenAreas: [], hiddenEntities: [] },
+						}),
+					);
+					document.getElementById("status").textContent = "Saved";
+				});
+			}
+		</script>
+	</body>
+</html>

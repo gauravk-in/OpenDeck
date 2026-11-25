@@ -1,6 +1,8 @@
 use std::fs;
 
 fn main() {
+	// The remote web app is embedded from remote-ui/dist; make sure the directory exists even when it has not been built.
+	let _ = fs::create_dir_all("../remote-ui/dist");
 	#[cfg(not(debug_assertions))]
 	println!("cargo:rerun-if-changed=../plugins");
 	if let Err(error) = || -> Result<(), std::io::Error> {
