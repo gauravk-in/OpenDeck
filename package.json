@@ -6,7 +6,9 @@
 	"repository": "https://github.com/nekename/OpenDeck",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build",
+		"build": "vite build && vite build remote-ui",
+		"dev:remote": "vite remote-ui",
+		"mock:remote": "node remote-ui/mock/server.mjs",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"tauri": "tauri",
 		"format": "prettier --write ."
